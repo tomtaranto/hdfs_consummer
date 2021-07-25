@@ -19,6 +19,7 @@ object hdfs_consummer extends App {
   props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
   props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
   props.put("group.id", "something")
+  // Distribue
   props.put("partition.assignment.strategy","org.apache.kafka.clients.consumer.StickyAssignor")
 
   
