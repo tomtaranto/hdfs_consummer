@@ -2,10 +2,10 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.kafka.clients.consumer.KafkaConsumer
 
-import java.io.PrintWriter
+import java.io.{BufferedWriter, OutputStreamWriter, PrintWriter}
 import java.util
 import java.util.logging.Level
-
+import org.apache.hadoop.fs.FSDataOutputStream
 
 object hdfs_consummer extends App {
 
@@ -19,13 +19,12 @@ object hdfs_consummer extends App {
   props.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
   props.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer")
   props.put("group.id", "something")
-  // Distribue
   props.put("partition.assignment.strategy","org.apache.kafka.clients.consumer.StickyAssignor")
 
-  
   val consumer = new KafkaConsumer[String, String](props)
 
   consumer.subscribe(util.Collections.singletonList(TOPIC))
+
 
   import java.util.logging.Logger
 
@@ -38,39 +37,73 @@ object hdfs_consummer extends App {
   val conf = new Configuration()
   conf.set("fs.defaultFS", "hdfs://localhost:9000")
   conf.set("HDAOOP_USER_NAME", "hadoop")
+  conf.set("dfs.client.block.write.replace-datanode-on-failure.policy","ALWAYS")
+  conf.set("dfs.client.block.write.replace-datanode-on-failure.best-effort","true")
   val fs= FileSystem.get(conf)
+  fs.setReplication(new Path("/tmp/mySample"),1)
 
-  // Pour eviter un var, on crée les writer à l'avance. Il faut donc connaitre le nombre de fichiers que l'on souhaite écrire.
-  // Ici, on se limitera à 100 fichiers .json. Chacun contenant 1000 messages de drones
-  val writers = (0 to 100).map(i => new PrintWriter(fs.create(new Path("/tmp/mySample" + i.toString+".json"))))
+  // NOTRE SEUL VAR AUTORISEE POUR LE COMPTAGE DES MESSAGES
   var compte : Int = 1
 
+  println("READY TO WRITE")
 
+  // fonction récursive pour tourner en continu
   def run_forever(): Unit = {
+    // lecture dans la stream
     val records=consumer.poll(100)
+
+    // pour chaque message
     records.forEach( record => {
-      val filenumber :Int = compte/1000
-      println(filenumber)
-      //println("**********************")
+      // numero du fichier dans lequel on va écrire
+      val filenumber :Int = compte/100
+      println(filenumber.toString)
+      // on supprime les guillemets du début et de la fin. Et on enlève les doubles "\"
+      // parceque kafka rajoute automatique des guillemets autour de notre string et échappe les "\"
       val res = record.value().replace("\\","").dropRight(1).substring(1)
+      println(res)
+      // si on a pas encore lu 1000 messages, on ajoute dans le fichier courant
+      if (compte % 100 != 0) {
+        // écrire le message avec une virgule à la fin (pour avoir un beau format json)
+        writeAsString("/tmp/mySample" + (compte/100).toInt.toString+".json", res+",")
 
-
-      if (compte % 1000 != 0) {
-        //writers((compte / 1000).toInt ).write(res +"," + "\n")
-        writers((compte/1000).toInt).println(res + ",")
+        // on augmente notre compteur de message
         compte += 1
       }
-      else {
-        writers(filenumber-1).println(res)
-        writers(filenumber-1).close()
+      else { // sinon on termine l'écriture dans le fichier précédent
+
+        writeAsString("/tmp/mySample" + (filenumber-1).toString+".json", res)
+
+        // on augmente notre compteur de message
         compte += 1
+
+        // on affiche dans la console qu'on a créé un nouveau fichier
         println("On cree un nouveau fichier")
       }
     })
+    // RECURSION
     run_forever()
   }
 
+  // première appel de la fonction récursive
   run_forever()
-  writers.map(writer => writer.close())
+
+  def writeAsString(hdfsPath: String, content: String) {
+    val path: Path = new Path(hdfsPath)
+    if (fs.exists(path)) {
+      //fs.delete(path, true)
+      val dataOutputStream: FSDataOutputStream = fs.append(path)
+      val bw: BufferedWriter = new BufferedWriter(new OutputStreamWriter(dataOutputStream, "UTF-8"))
+      bw.write(content)
+      bw.newLine()
+      bw.close()
+    }
+    else {
+      val dataOutputStream: FSDataOutputStream = fs.create(path)
+      val bw: BufferedWriter = new BufferedWriter(new OutputStreamWriter(dataOutputStream, "UTF-8"))
+      bw.write(content)
+      bw.close()
+    }
+
+  }
 
 }
